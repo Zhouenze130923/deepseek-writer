@@ -1,4 +1,3 @@
-import json
 from agents.base import BaseAgent
 from prompts.editor import EDITOR_SYSTEM, EDITOR_USER_TEMPLATE
 
@@ -6,26 +5,36 @@ from prompts.editor import EDITOR_SYSTEM, EDITOR_USER_TEMPLATE
 class EditorAgent(BaseAgent):
     name = "editor"
 
-    def review(self, title: str, genre: str, volume_number: int, volume_title: str,
-               chapter_number: int, chapter_title: str, content: str,
-               characters: dict, writing_style: dict, bible_context: str = "") -> str:
-        user_message = EDITOR_USER_TEMPLATE.format(
-            title=title, genre=genre, volume_number=volume_number, volume_title=volume_title,
-            chapter_number=chapter_number, chapter_title=chapter_title, content=content,
-            characters=json.dumps(characters, ensure_ascii=False, indent=2),
-            writing_style=json.dumps(writing_style, ensure_ascii=False, indent=2),
-            bible_context=bible_context or "无",
+    def _build_context(self, title, genre, volume_number, volume_title, chapter_number, chapter_title,
+                       content, brief, bible_context):
+        # Use condensed brief — same format as writer, much cheaper than full JSON
+        chars_list = brief.get("characters_brief", []) if brief else []
+        chars_text = "\n".join(
+            f"- {c.get('name','')}({c.get('role','')}): {c.get('core','')} 说话:{c.get('voice','')}"
+            for c in chars_list
         )
-        return self.run(EDITOR_SYSTEM, user_message, temperature=0.4, max_tokens=4096)
+        style_text = "\n".join(f"- {r}" for r in brief.get("style_rules", [])) if brief else ""
+        world_text = "\n".join(f"- {r}" for r in brief.get("world_rules", [])) if brief else ""
 
-    def review_stream(self, title: str, genre: str, volume_number: int, volume_title: str,
-                      chapter_number: int, chapter_title: str, content: str,
-                      characters: dict, writing_style: dict, bible_context: str = ""):
-        user_message = EDITOR_USER_TEMPLATE.format(
-            title=title, genre=genre, volume_number=volume_number, volume_title=volume_title,
-            chapter_number=chapter_number, chapter_title=chapter_title, content=content,
-            characters=json.dumps(characters, ensure_ascii=False, indent=2),
-            writing_style=json.dumps(writing_style, ensure_ascii=False, indent=2),
+        return EDITOR_USER_TEMPLATE.format(
+            title=title, genre=genre,
+            volume_number=volume_number, volume_title=volume_title,
+            chapter_number=chapter_number, chapter_title=chapter_title,
+            content=content,
+            characters_brief=chars_text or "无",
+            style_rules=style_text or "无",
+            world_rules=world_text or "无",
             bible_context=bible_context or "无",
         )
-        return self.run(EDITOR_SYSTEM, user_message, stream=True, temperature=0.4, max_tokens=4096)
+
+    def review(self, title, genre, volume_number, volume_title,
+               chapter_number, chapter_title, content, brief, bible_context=""):
+        user_message = self._build_context(title, genre, volume_number, volume_title,
+                                           chapter_number, chapter_title, content, brief, bible_context)
+        return self.run(EDITOR_SYSTEM, user_message, temperature=0.4, max_tokens=2048)
+
+    def review_stream(self, title, genre, volume_number, volume_title,
+                      chapter_number, chapter_title, content, brief, bible_context=""):
+        user_message = self._build_context(title, genre, volume_number, volume_title,
+                                           chapter_number, chapter_title, content, brief, bible_context)
+        return self.run(EDITOR_SYSTEM, user_message, stream=True, temperature=0.4, max_tokens=2048)

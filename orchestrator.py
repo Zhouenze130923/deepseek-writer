@@ -43,8 +43,8 @@ class Orchestrator:
     def get_bible_context(self, project: Project, volume_number: int, chapter_number: int) -> str:
         return project.bible.to_context(volume_number, chapter_number)
 
-    def review_chapter(self, project: Project, volume_idx: int, chapter_idx: int, *,
-                       on_chunk: Callable[[str], None] | None = None) -> str:
+    def review_chapter(self, project: Project, volume_idx: int, chapter_idx: int,
+                       brief: dict, *, on_chunk: Callable[[str], None] | None = None) -> str:
         volume = project.volumes[volume_idx]
         chapter = volume.chapters[chapter_idx]
         bible_ctx = self.get_bible_context(project, volume.volume_number, chapter.chapter_number)
@@ -55,8 +55,7 @@ class Orchestrator:
                 title=project.title, genre=project.genre,
                 volume_number=volume.volume_number, volume_title=volume.volume_title,
                 chapter_number=chapter.chapter_number, chapter_title=chapter.chapter_title,
-                content=chapter.content, characters=project.characters,
-                writing_style=project.writing_style, bible_context=bible_ctx,
+                content=chapter.content, brief=brief, bible_context=bible_ctx,
             ):
                 report += chunk; on_chunk(chunk)
             return report
@@ -64,6 +63,5 @@ class Orchestrator:
             title=project.title, genre=project.genre,
             volume_number=volume.volume_number, volume_title=volume.volume_title,
             chapter_number=chapter.chapter_number, chapter_title=chapter.chapter_title,
-            content=chapter.content, characters=project.characters,
-            writing_style=project.writing_style, bible_context=bible_ctx,
+            content=chapter.content, brief=brief, bible_context=bible_ctx,
         )

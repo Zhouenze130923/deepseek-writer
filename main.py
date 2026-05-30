@@ -504,7 +504,7 @@ class DeepSeekWriter:
 
             report = ""
             try:
-                report = self.orchestrator.review_chapter(self.project, vi, ci, on_chunk=print_streaming)
+                report = self.orchestrator.review_chapter(self.project, vi, ci, self.brief or {}, on_chunk=print_streaming)
                 console.print("")
             except Exception as e:
                 print_warning(f"审阅跳过: {e}")
