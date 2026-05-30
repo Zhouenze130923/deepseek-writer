@@ -1,13 +1,17 @@
+import asyncio
 from agents.base import BaseAgent
-from prompts.editor import EDITOR_SYSTEM, EDITOR_USER_TEMPLATE
+from prompts.editor import (
+    EDITOR_SYSTEM, EDITOR_USER_TEMPLATE,
+    LOGIC_SYSTEM, STYLE_SYSTEM, FORESHADOW_EDITOR_SYSTEM,
+)
 
 
 class EditorAgent(BaseAgent):
+    """冷血编辑——支持单一审查或三项专项并行审查。"""
     name = "editor"
 
     def _build_context(self, title, genre, volume_number, volume_title, chapter_number, chapter_title,
                        content, brief, bible_context):
-        # Use condensed brief — same format as writer, much cheaper than full JSON
         chars_list = brief.get("characters_brief", []) if brief else []
         chars_text = "\n".join(
             f"- {c.get('name','')}({c.get('role','')}): {c.get('core','')} 说话:{c.get('voice','')}"
@@ -16,25 +20,62 @@ class EditorAgent(BaseAgent):
         style_text = "\n".join(f"- {r}" for r in brief.get("style_rules", [])) if brief else ""
         world_text = "\n".join(f"- {r}" for r in brief.get("world_rules", [])) if brief else ""
 
-        return EDITOR_USER_TEMPLATE.format(
-            title=title, genre=genre,
-            volume_number=volume_number, volume_title=volume_title,
-            chapter_number=chapter_number, chapter_title=chapter_title,
-            content=content,
-            characters_brief=chars_text or "无",
-            style_rules=style_text or "无",
-            world_rules=world_text or "无",
-            bible_context=bible_context or "无",
-        )
+        return {
+            "title": title, "genre": genre,
+            "volume_number": volume_number, "volume_title": volume_title,
+            "chapter_number": chapter_number, "chapter_title": chapter_title,
+            "content": content,
+            "characters_brief": chars_text or "无",
+            "style_rules": style_text or "无",
+            "world_rules": world_text or "无",
+            "bible_context": bible_context or "无",
+        }
 
     def review(self, title, genre, volume_number, volume_title,
                chapter_number, chapter_title, content, brief, bible_context=""):
-        user_message = self._build_context(title, genre, volume_number, volume_title,
-                                           chapter_number, chapter_title, content, brief, bible_context)
+        ctx = self._build_context(title, genre, volume_number, volume_title,
+                                  chapter_number, chapter_title, content, brief, bible_context)
+        user_message = EDITOR_USER_TEMPLATE.format(**ctx)
         return self.run(EDITOR_SYSTEM, user_message, temperature=0.4, max_tokens=2048)
 
     def review_stream(self, title, genre, volume_number, volume_title,
                       chapter_number, chapter_title, content, brief, bible_context=""):
-        user_message = self._build_context(title, genre, volume_number, volume_title,
-                                           chapter_number, chapter_title, content, brief, bible_context)
+        ctx = self._build_context(title, genre, volume_number, volume_title,
+                                  chapter_number, chapter_title, content, brief, bible_context)
+        user_message = EDITOR_USER_TEMPLATE.format(**ctx)
         return self.run(EDITOR_SYSTEM, user_message, stream=True, temperature=0.4, max_tokens=2048)
+
+    # --- Parallel triple-editor review ---
+
+    def review_parallel(self, title, genre, volume_number, volume_title,
+                        chapter_number, chapter_title, content, brief, bible_context="") -> str:
+        """三项专项编辑并行审查，合并报告。"""
+        ctx = self._build_context(title, genre, volume_number, volume_title,
+                                  chapter_number, chapter_title, content, brief, bible_context)
+        base_msg = EDITOR_USER_TEMPLATE.format(**ctx)
+
+        async def run_all():
+            loop = asyncio.get_event_loop()
+            tasks = []
+            # Logic editor: consistency, plot holes, contradictions
+            tasks.append(loop.run_in_executor(None, self.run, LOGIC_SYSTEM, base_msg + "\n请只检查逻辑一致性、因果关系和设定矛盾。", False, 0.3, 1024))
+            # Style editor: prose quality, show-vs-tell, dialogue
+            tasks.append(loop.run_in_executor(None, self.run, STYLE_SYSTEM, base_msg + "\n请只检查文笔质量、展示vs说教、对话辨识度。", False, 0.3, 1024))
+            # Foreshadowing editor: hooks, plot threads
+            tasks.append(loop.run_in_executor(None, self.run, FORESHADOW_EDITOR_SYSTEM, base_msg + "\n请只检查伏笔处理、章末钩子、节奏。", False, 0.3, 1024))
+            return await asyncio.gather(*tasks)
+
+        results = asyncio.run(run_all())
+        logic_report, style_report, foreshadow_report = results
+
+        return f"""## 🔍 三专项编辑联合审查
+
+### 逻辑编辑（一致性/矛盾/因果）
+{logic_report or '通过'}
+
+### 风格编辑（文笔/展示/对话）
+{style_report or '通过'}
+
+### 伏笔编辑（线索/钩子/节奏）
+{foreshadow_report or '通过'}
+"""

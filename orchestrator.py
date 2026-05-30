@@ -30,8 +30,8 @@ class Orchestrator:
     def generate_outline(self, premise: str, template_guide: str = "") -> dict:
         return self.outline_agent.generate(premise=premise, template_guide=template_guide)
 
-    def design_characters(self, outline: dict, style: str = "自动匹配") -> dict:
-        return self.character_agent.design(outline=outline, style=style)
+    def design_characters(self, outline: dict, style: str = "自动匹配", constraints: str = "") -> dict:
+        return self.character_agent.design(outline=outline, style=style, character_requirements=constraints)
 
     def condense(self, outline: dict, characters: dict, writing_style: dict) -> dict:
         return self.condenser_agent.condense(outline=outline, characters=characters, writing_style=writing_style)
@@ -44,10 +44,20 @@ class Orchestrator:
         return project.bible.to_context(volume_number, chapter_number)
 
     def review_chapter(self, project: Project, volume_idx: int, chapter_idx: int,
-                       brief: dict, *, on_chunk: Callable[[str], None] | None = None) -> str:
+                       brief: dict, *, parallel: bool = False,
+                       on_chunk: Callable[[str], None] | None = None) -> str:
         volume = project.volumes[volume_idx]
         chapter = volume.chapters[chapter_idx]
         bible_ctx = self.get_bible_context(project, volume.volume_number, chapter.chapter_number)
+
+        if parallel:
+            # Three specialized editors in parallel
+            return self.editor_agent.review_parallel(
+                title=project.title, genre=project.genre,
+                volume_number=volume.volume_number, volume_title=volume.volume_title,
+                chapter_number=chapter.chapter_number, chapter_title=chapter.chapter_title,
+                content=chapter.content, brief=brief, bible_context=bible_ctx,
+            )
 
         if on_chunk:
             report = ""
