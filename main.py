@@ -630,14 +630,21 @@ class DeepSeekWriter:
                 return
 
     def _report_has_issues(self, report: str) -> bool:
+        """判断编辑报告是否包含需要修改的实际问题。无问题则跳过修改以节省时间/token。"""
         if not report.strip():
             return False
-        lines = [l.strip() for l in report.split("\n") if l.strip()]
-        issue_lines = [l for l in lines if re.search(r'⚠|不合格|必须修改|严重问题|有矛盾|不合理|硬伤', l)]
-        if issue_lines:
+        # Explicit issue markers → must revise
+        if re.search(r'⚠|不合格|必须修改|严重问题|有矛盾|不合理|硬伤', report):
             return True
-        pass_lines = [l for l in lines if re.search(r'通过|无问题|没问题|合格|没有发现|未发现', l)]
-        return len(pass_lines) < len(lines) * 0.5
+        # All sections passed → skip
+        pass_count = len(re.findall(r'通过|逻辑通过|文笔通过|伏笔通过|无问题|没问题|合格|没有发现问题|未发现问题', report))
+        if pass_count >= 3:
+            return False
+        # If any section explicitly says "通过", and no issues found, skip
+        if re.search(r'通过', report) and not re.search(r'需修改|建议(删除|重写|修改|调整)', report):
+            return False
+        # Default: if in doubt, skip (don't waste time on minor suggestions)
+        return False
 
     def _get_prev_context(self, vi, ci):
         if ci == 0:
