@@ -24,7 +24,7 @@ class CondenserAgent:
                 "goal": v.get("synopsis", "")[:120], "chapters": chapters,
             })
 
-        ws = characters.get("writing_style", {}) or {}
+        ws = characters.get("writing_style", {})
         style_rules = [
             f"叙事: {ws.get('narrative_mode','第三人称')}", f"节奏: {ws.get('pace','中速')}",
             f"基调: {ws.get('tone','')}", f"句式: {ws.get('sentence_style','')}",
@@ -33,7 +33,7 @@ class CondenserAgent:
         for feat in ws.get("language_features", [])[:3]:
             style_rules.append(f"特点: {feat}")
 
-        wb = characters.get("world_building", {}) or {}
+        wb = characters.get("world_building", {})
         world_rules = wb.get("rules", [])[:10]
 
         continuity = ""

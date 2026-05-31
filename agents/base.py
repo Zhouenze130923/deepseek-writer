@@ -55,10 +55,16 @@ class BaseAgent:
 
         start = response.find("{")
         if start < 0:
-            raise ValueError(f"Cannot find JSON: {response[:200]}...")
+            raise ValueError(f"Cannot find JSON in response: {response[:200]}...")
         json_str = response[start:]
 
-        for _ in range(10):
+        # 快速校验：如果已经是合法 JSON，直接返回
+        try:
+            return json.loads(json_str)
+        except json.JSONDecodeError:
+            pass
+
+        for _ in range(5):
             try:
                 return json.loads(json_str)
             except json.JSONDecodeError as e:
@@ -76,10 +82,7 @@ class BaseAgent:
                     continue
                 break
 
-        try:
-            return json.loads(json_str)
-        except json.JSONDecodeError:
-            raise ValueError(f"JSON parse failed: {response[:300]}...")
+        raise ValueError(f"JSON parse failed after 5 retries. First 300 chars: {response[:300]}...")
 
 
 def _balance_json(s: str) -> str:

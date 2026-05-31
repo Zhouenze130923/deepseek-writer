@@ -50,28 +50,7 @@ class WriterAgent(BaseAgent):
                                   previous_context=previous_context, plant_foreshadowing=plant_foreshadowing,
                                   resolve_foreshadowing=resolve_foreshadowing, bible_context=bible_context)
         response = self.run(WRITER_SYSTEM, WRITER_CHAPTER_TEMPLATE.format(**ctx), stream=True, temperature=0.85, max_tokens=8192)
-        buffer = ""
-        in_content = False
-        for chunk in response:
-            buffer += chunk
-            if "【正文开始】" in buffer and not in_content:
-                in_content = True
-                idx = buffer.index("【正文开始】") + 6
-                buffer = buffer[idx:]
-            if "【正文结束】" in buffer:
-                end_idx = buffer.index("【正文结束】")
-                yield buffer[:end_idx]
-                return
-            if in_content:
-                yield_buffer = buffer
-                buffer = ""
-                if yield_buffer:
-                    yield yield_buffer
-        if buffer:
-            if "【正文结束】" in buffer:
-                buffer = buffer[: buffer.index("【正文结束】")]
-            if buffer.strip():
-                yield buffer
+        yield from self._stream_extract_content(response)
 
     def revise_chapter(self, brief: dict, original_content: str, editor_report: str) -> str:
         chars_list = brief.get("characters_brief", [])
@@ -95,9 +74,22 @@ class WriterAgent(BaseAgent):
             original_content=original_content, editor_report=editor_report,
         )
         response = self.run(WRITER_SYSTEM, user_message, stream=True, temperature=0.7, max_tokens=8192)
+        yield from self._stream_extract_content(response)
+
+    @staticmethod
+    def _extract_content(response: str) -> str:
+        if "【正文开始】" in response and "【正文结束】" in response:
+            start = response.index("【正文开始】") + 6
+            end = response.index("【正文结束】")
+            return response[start:end].strip()
+        return response.strip()
+
+    @staticmethod
+    def _stream_extract_content(response_stream):
+        """从流式响应中提取【正文开始】和【正文结束】之间的内容。"""
         buffer = ""
         in_content = False
-        for chunk in response:
+        for chunk in response_stream:
             buffer += chunk
             if "【正文开始】" in buffer and not in_content:
                 in_content = True
@@ -117,11 +109,3 @@ class WriterAgent(BaseAgent):
                 buffer = buffer[: buffer.index("【正文结束】")]
             if buffer.strip():
                 yield buffer
-
-    @staticmethod
-    def _extract_content(response: str) -> str:
-        if "【正文开始】" in response and "【正文结束】" in response:
-            start = response.index("【正文开始】") + 6
-            end = response.index("【正文结束】")
-            return response[start:end].strip()
-        return response.strip()
