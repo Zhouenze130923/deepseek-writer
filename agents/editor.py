@@ -1,4 +1,3 @@
-import asyncio
 from agents.base import BaseAgent
 from prompts.editor import (
     EDITOR_SYSTEM, EDITOR_USER_TEMPLATE,
@@ -54,19 +53,32 @@ class EditorAgent(BaseAgent):
                                   chapter_number, chapter_title, content, brief, bible_context)
         base_msg = EDITOR_USER_TEMPLATE.format(**ctx)
 
-        async def run_all():
-            loop = asyncio.get_event_loop()
-            tasks = []
-            # Logic editor: consistency, plot holes, contradictions
-            tasks.append(loop.run_in_executor(None, self.run, LOGIC_SYSTEM, base_msg + "\n请只检查逻辑一致性、因果关系和设定矛盾。", False, 0.3, 1024))
-            # Style editor: prose quality, show-vs-tell, dialogue
-            tasks.append(loop.run_in_executor(None, self.run, STYLE_SYSTEM, base_msg + "\n请只检查文笔质量、展示vs说教、对话辨识度。", False, 0.3, 1024))
-            # Foreshadowing editor: hooks, plot threads
-            tasks.append(loop.run_in_executor(None, self.run, FORESHADOW_EDITOR_SYSTEM, base_msg + "\n请只检查伏笔处理、章末钩子、节奏。", False, 0.3, 1024))
-            return await asyncio.gather(*tasks)
+        import concurrent.futures
 
-        results = asyncio.run(run_all())
-        logic_report, style_report, foreshadow_report = results
+        def _call_logic():
+            return self.run(LOGIC_SYSTEM,
+                base_msg + "\n请只检查逻辑一致性、因果关系和设定矛盾。",
+                stream=False, temperature=0.3, max_tokens=1024)
+
+        def _call_style():
+            return self.run(STYLE_SYSTEM,
+                base_msg + "\n请只检查文笔质量、展示vs说教、对话辨识度。",
+                stream=False, temperature=0.3, max_tokens=1024)
+
+        def _call_foreshadow():
+            return self.run(FORESHADOW_EDITOR_SYSTEM,
+                base_msg + "\n请只检查伏笔处理、章末钩子、节奏。",
+                stream=False, temperature=0.3, max_tokens=1024)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+            futures = [
+                pool.submit(_call_logic),
+                pool.submit(_call_style),
+                pool.submit(_call_foreshadow),
+            ]
+            logic_report = futures[0].result()
+            style_report = futures[1].result()
+            foreshadow_report = futures[2].result()
 
         return f"""## 🔍 三专项编辑联合审查
 
