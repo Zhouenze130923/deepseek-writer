@@ -13,6 +13,32 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+# ── Monkey-patch: fix gradio 4.44.1 + gradio_client 1.3.0 schema bug ──
+def _patch_gradio_client():
+    """Fix TypeError in get_type() when schema is a boolean (valid JSON Schema)."""
+    try:
+        import gradio_client.utils as gcu
+        _orig_get_type = gcu.get_type
+        _orig_json_schema = gcu._json_schema_to_python_type
+
+        def _fixed_get_type(schema):
+            if isinstance(schema, bool):
+                return "boolean"  # True schema = any type, map to bool as safest fallback
+            return _orig_get_type(schema)
+
+        def _fixed_json_schema_to_python_type(schema, defs):
+            if isinstance(schema, bool):
+                return "Any"
+            return _orig_json_schema(schema, defs)
+
+        gcu.get_type = _fixed_get_type
+        gcu._json_schema_to_python_type = _fixed_json_schema_to_python_type
+    except Exception:
+        pass
+
+_patch_gradio_client()
+# ────────────────────────────────────────────────────────────────
+
 from config import Config
 from orchestrator import Orchestrator
 from project import Project, Volume, Chapter
@@ -1043,10 +1069,11 @@ def build_ui():
 
     # Launch
     ui.launch(
-        server_name="0.0.0.0",
+        server_name="127.0.0.1",
         server_port=7860,
         share=False,
         show_error=True,
+        inbrowser=True,
     )
 
 
