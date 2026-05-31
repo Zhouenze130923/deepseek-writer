@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deepseek-writer"
+version = "1.0.0"
+description = "AI 网文写作助手 — 多 Agent 协作，输入灵感即可自动成文"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "Zhouenze" },
+]
+dependencies = [
+    "rich>=13.0.0",
+    "openai>=1.50.0",
+    "anthropic>=0.40.0",
+    "gradio>=5.0.0",
+    "ebooklib>=0.18",
+    "fpdf2>=2.7.0",
+    "python-docx>=1.1.0",
+    "markdown>=3.5.0",
+]
+
+[project.scripts]
+deepseek-writer = "cli:main"
