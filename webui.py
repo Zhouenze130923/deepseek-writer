@@ -100,6 +100,8 @@ class WebApp:
         self.logs: list[str] = []
         self._lock = threading.Lock()
         self._stream_buffer: list[str] = []
+        self.auto_review = True      # 全自动三编辑审阅
+        self.review_rounds = 2       # 审阅轮数
 
     # ── Logging ──
 
@@ -327,7 +329,7 @@ class WebApp:
     # ── Writing ──
 
     def write_all_chapters(self, progress=...) -> tuple[str, str]:
-        """Write all pending chapters. Returns (status, logs)."""
+        """全自动写作：写 → 三编辑并审 → 自动修改 → 下一章。"""
         if not self.project or not self.brief:
             return self._status_md(), self.get_logs()
 
@@ -338,7 +340,8 @@ class WebApp:
             self.log("所有章节已完成！")
             return self._status_md(), self.get_logs()
 
-        self.log(f"✍️ 开始写作 {total_pending} 章...")
+        review_mode = "三编辑并审" if self.auto_review else "跳过审阅"
+        self.log(f"✍️ 开始全自动写作 {total_pending} 章 ({review_mode}, {self.review_rounds}轮)...")
         self.project.current_stage = "writing"
 
         done_count = 0
@@ -358,7 +361,7 @@ class WebApp:
                 pov = ch_plan.get("pov", chapter.pov_character)
                 prev = self._prev_context(vi, ci)
 
-                self.log(f"✍️ 第{chapter.chapter_number}章「{chapter.chapter_title}」...")
+                self.log(f"✍️ V{volume.volume_number}C{chapter.chapter_number}「{chapter.chapter_title}」...")
 
                 try:
                     writer = self.orchestrator._get_writer()
@@ -413,6 +416,43 @@ class WebApp:
                         wc = len(content)
 
                     chapter.content = content
+                    self.log(f"  📝 初稿 {wc} 字")
+
+                    # ── Auto Review + Revise ──
+                    if self.auto_review:
+                        for round_num in range(1, self.review_rounds + 1):
+                            self.log(f"  🔍 三编辑并审 第{round_num}轮...")
+                            try:
+                                report = self.orchestrator.review_chapter(
+                                    self.project, vi, ci, self.brief,
+                                    parallel=True,  # 三编辑并行: 逻辑+风格+伏笔
+                                )
+                            except Exception as e:
+                                self.log(f"  ⚠ 审阅跳过: {e}")
+                                break
+
+                            if not self._report_has_real_issues(report):
+                                self.log(f"  ✅ 编辑: 无重大问题，通过")
+                                break
+
+                            # Extract key issues for log
+                            issue_count = len(re.findall(r'⚠|需修改|矛盾|问题', report))
+                            self.log(f"  ⚠ 发现 {issue_count} 处问题，自动修改...")
+
+                            try:
+                                revised = writer.revise_chapter(
+                                    brief=self.brief,
+                                    original_content=chapter.content,
+                                    editor_report=report,
+                                )
+                                chapter.content = revised
+                                self.log(f"  ✅ 第{round_num}轮修改完成 ({len(revised)} 字)")
+                            except Exception as e:
+                                self.log(f"  ⚠ 修改跳过: {e}")
+                                break
+                    else:
+                        self.log(f"  ⏩ 跳过审阅 (极速模式)")
+
                     chapter.status = "done"
                     done_count += 1
 
@@ -428,19 +468,48 @@ class WebApp:
                             volume.volume_number, chapter.chapter_number,
                             chapter.synopsis, pov, ", ".join(chapter.key_events[:3]))
 
-                    self.log(f"  ✅ 完成 ({wc} 字)")
+                    self.log(f"  🎉 第{chapter.chapter_number}章完成 ({len(chapter.content)} 字)")
 
                 except Exception as e:
                     self.log(f"  ❌ 失败: {e}")
                     chapter.status = "pending"
                     continue
 
+                # Save after each chapter
+                self.file_manager.save(self.project)
+
             volume.status = "done"
 
         self.project.current_stage = "done"
         self.file_manager.save(self.project)
-        self.log(f"🎉 写作完成！{done_count} 章")
+        self.log(f"🎉 全自动写作完成！共 {done_count} 章")
         return self._status_md(), self.get_logs()
+
+    def _report_has_real_issues(self, report: str) -> bool:
+        """判断三编辑报告中是否有需要修改的实际问题。"""
+        if not report or not report.strip():
+            return False
+        # All three editors explicitly passed → no issues
+        pass_count = len(re.findall(
+            r'(逻辑通过|节奏通过|连贯通过|无问题|没问题|合格|未发现问题|没有发现问题|无不一致|无矛盾)',
+            report,
+        ))
+        if pass_count >= 2:
+            return False
+        # Has explicit issue markers → must revise
+        if re.search(
+            r'⚠|不合格|必须修改|严重问题|有矛盾|不合理|硬伤|需修改|建议修改|建议重写|建议调整|'
+            r'明显矛盾|严重拖沓|重大漏洞|行为与设定|前后不一|违反|逻辑不通|逻辑错误',
+            report,
+        ):
+            return True
+        # If editors found something concrete (not just "通过")
+        if re.search(r'需(修正|调整|改进|重写)|建议(删除|修改|重写|调整)', report):
+            return True
+        # Default: review report has content that isn't just "pass" → might have issues
+        if len(report.strip()) > 30:
+            return True
+        return False
 
     def write_single_chapter(self, volume_num: int, chapter_num: int) -> tuple[str, str, str]:
         """Write a single chapter, return (content, status, logs)."""
@@ -882,8 +951,24 @@ def build_ui():
                 write_status = gr.Markdown(app.get_status())
 
             with gr.Row():
-                write_all_btn = gr.Button("🚀 全自动写作（全部章节）", variant="primary", size="lg")
+                with gr.Column(scale=2):
+                    write_all_btn = gr.Button("🚀 全自动写作（全部章节）", variant="primary", size="lg")
+                with gr.Column(scale=1):
+                    auto_review_toggle = gr.Checkbox(label="三编辑并审", value=True,
+                                                     info="写完后自动三子代理审阅（逻辑+风格+伏笔）")
+                    review_rounds_slider = gr.Slider(label="审阅轮数", minimum=1, maximum=3, value=2, step=1,
+                                                    info="每章最多审阅修改几轮")
+
+            with gr.Row():
                 write_log = gr.Textbox(label="📋 写作日志", lines=8, interactive=False, autoscroll=True)
+
+            def update_review_settings(auto, rounds):
+                app.auto_review = auto
+                app.review_rounds = int(rounds)
+                return f"设置: {'三编辑并审' if auto else '极速(跳过审阅)'}, {int(rounds)}轮"
+
+            auto_review_toggle.change(update_review_settings, [auto_review_toggle, review_rounds_slider], None)
+            review_rounds_slider.change(update_review_settings, [auto_review_toggle, review_rounds_slider], None)
 
             write_all_btn.click(
                 app.write_all_chapters,
