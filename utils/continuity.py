@@ -17,21 +17,33 @@ class ContinuityBible:
 
     def __init__(self):
         self.facts: list[Fact] = []
+        self._context_cache: dict[tuple, str] = {}
+        self._facts_version = 0
+
+    def _invalidate_cache(self):
+        self._context_cache.clear()
+        self._facts_version += 1
 
     def establish(self, category: str, key: str, value: str, volume: int, chapter: int, source: str = "") -> Fact:
         for f in self.facts:
             if f.category == category and f.key == key:
                 if f.value != value:
                     f.value = value; f.established_volume = volume; f.established_chapter = chapter; f.source = source
+                    self._invalidate_cache()
                 return f
         fact = Fact(category=category, key=key, value=value, established_volume=volume, established_chapter=chapter, source=source)
         self.facts.append(fact)
+        self._invalidate_cache()
         return fact
 
     def get_category(self, category: str) -> list[Fact]:
         return [f for f in self.facts if f.category == category]
 
     def to_context(self, for_volume: int, for_chapter: int) -> str:
+        cache_key = (for_volume, for_chapter, self._facts_version)
+        if cache_key in self._context_cache:
+            return self._context_cache[cache_key]
+
         def before(f):
             if f.established_volume < for_volume: return True
             if f.established_volume == for_volume and f.established_chapter < for_chapter: return True
@@ -52,7 +64,9 @@ class ContinuityBible:
             lines.append("\n### 关键物品")
             for f in items[-10:]:
                 lines.append(f"- {f.key}: {f.value}")
-        return "\n".join(lines)
+        result = "\n".join(lines)
+        self._context_cache[cache_key] = result
+        return result
 
     def stats(self) -> dict:
         by_cat = {c: len(self.get_category(c)) for c in self.CATEGORIES}

@@ -1,5 +1,5 @@
 from __future__ import annotations
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from utils.foreshadowing import ForeshadowTracker
 from utils.continuity import ContinuityBible
@@ -52,23 +52,11 @@ class Project:
         if not self.updated_at: self.updated_at = datetime.now().isoformat()
 
     def to_dict(self) -> dict:
-        return {
-            "title": self.title, "genre": self.genre, "premise": self.premise,
-            "theme": self.theme, "tone": self.tone,
-            "volumes": [{"volume_number": v.volume_number, "volume_title": v.volume_title,
-                         "synopsis": v.synopsis, "status": v.status,
-                         "chapters": [{"chapter_number": c.chapter_number, "chapter_title": c.chapter_title,
-                                       "synopsis": c.synopsis, "key_events": c.key_events,
-                                       "pov_character": c.pov_character, "word_count_target": c.word_count_target,
-                                       "content": c.content, "status": c.status} for c in v.chapters]}
-                        for v in self.volumes],
-            "characters": self.characters, "plot_arcs": self.plot_arcs,
-            "world_building": self.world_building, "writing_style": self.writing_style,
-            "style_reference": self.style_reference, "target_audience": self.target_audience,
-            "template": self.template, "created_at": self.created_at, "updated_at": self.updated_at,
-            "current_stage": self.current_stage,
-            "foreshadowing": self.foreshadowing.to_dict(), "bible": self.bible.to_dict(),
-        }
+        d = asdict(self)
+        # ForeshadowTracker 和 ContinuityBible 不是纯 dataclass，替换为自定义序列化
+        d["foreshadowing"] = self.foreshadowing.to_dict()
+        d["bible"] = self.bible.to_dict()
+        return d
 
     @classmethod
     def from_dict(cls, data: dict) -> "Project":

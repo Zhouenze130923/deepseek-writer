@@ -71,6 +71,8 @@ class EditorAgent(BaseAgent):
                 stream=False, temperature=0.3, max_tokens=1024)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+            # 注意：self.run() 不使用 self.history，所以并发调用 LLM 是安全的
+            # OpenAI/Anthropic 客户端内置连接池，支持并发请求
             futures = [
                 pool.submit(_call_logic),
                 pool.submit(_call_style),

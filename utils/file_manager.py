@@ -1,19 +1,26 @@
 from __future__ import annotations
 import json
+import os
 import shutil
 from pathlib import Path
 from project import Project
 
 
 class FileManager:
-    DESKTOP = Path.home() / "Desktop" / "DeepSeekWriter"
+    """
+    项目管理器。项目存储路径可通过环境变量 DEEPSEEK_WRITER_DIR 自定义。
+    默认: ~/Desktop/DeepSeekWriter/
+    """
 
-    def __init__(self):
-        self.DESKTOP.mkdir(parents=True, exist_ok=True)
+    def __init__(self, base_path: str | Path | None = None):
+        self.base_path = Path(base_path) if base_path else Path(
+            os.environ.get("DEEPSEEK_WRITER_DIR") or Path.home() / "Desktop" / "DeepSeekWriter"
+        )
+        self.base_path.mkdir(parents=True, exist_ok=True)
 
     def project_dir(self, title: str) -> Path:
         safe = "".join(c for c in title if c.isalnum() or c in " _-").strip() or "Untitled"
-        return self.DESKTOP / safe
+        return self.base_path / safe
 
     def save(self, project: Project):
         proj_dir = self.project_dir(project.title)
@@ -34,9 +41,9 @@ class FileManager:
         return Project.from_dict(json.loads(project_file.read_text()))
 
     def list_projects(self) -> list[str]:
-        if not self.DESKTOP.exists():
+        if not self.base_path.exists():
             return []
-        return [d.name for d in self.DESKTOP.iterdir() if d.is_dir() and (d / "project.json").exists()]
+        return [d.name for d in self.base_path.iterdir() if d.is_dir() and (d / "project.json").exists()]
 
     def delete_project(self, title: str):
         proj_dir = self.project_dir(title)

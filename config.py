@@ -42,3 +42,24 @@ class Config:
         if self.provider == "deepseek":
             return self.model
         return self.claude_model
+
+    def validate(self) -> list[str]:
+        """校验配置，返回所有问题列表。空列表表示配置正常。"""
+        issues = []
+        if self.provider not in ("deepseek", "claude"):
+            issues.append(f"不支持的 provider: {self.provider}（应为 deepseek 或 claude）")
+        if not self.api_key:
+            issues.append("未配置 API Key（设置环境变量或通过 /config 配置）")
+        if self.provider == "deepseek":
+            if not self.model:
+                issues.append("DeepSeek 模型名为空")
+            if not self.deepseek_base_url:
+                issues.append("DeepSeek API 地址为空")
+        else:
+            if not self.claude_model:
+                issues.append("Claude 模型名为空")
+        if not (0 < self.temperature <= 2):
+            issues.append(f"temperature 值异常: {self.temperature}（应为 0-2）")
+        if self.max_tokens < 256:
+            issues.append(f"max_tokens 过小: {self.max_tokens}（建议 ≥256）")
+        return issues

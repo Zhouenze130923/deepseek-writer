@@ -18,7 +18,7 @@ class Orchestrator:
         self.client = LLMClient(config)
         self.outline_agent = OutlineAgent(self.client, config)
         self.character_agent = CharacterAgent(self.client, config)
-        self.condenser_agent = CondenserAgent()
+        self.condenser_agent = CondenserAgent(self.client, config)
         self.editor_agent = EditorAgent(self.client, config)
         self.writer_agents: list[WriterAgent] = []
 
@@ -43,6 +43,42 @@ class Orchestrator:
     def get_bible_context(self, project: Project, volume_number: int, chapter_number: int) -> str:
         return project.bible.to_context(volume_number, chapter_number)
 
+    def write_single_chapter(self, project: Project, volume_idx: int, chapter_idx: int,
+                              brief: dict, review_rounds: int = 1, parallel_editors: bool = False,
+                              on_chunk=None, on_review=None) -> str:
+        """写入并审阅单个章节。"""
+        volume = project.volumes[volume_idx]
+        chapter = volume.chapters[chapter_idx]
+
+        prev_ctx = project.get_chapter_context(volume_idx, chapter_idx)
+        bible_ctx = self.get_bible_context(project, volume.volume_number, chapter.chapter_number)
+        _, unresolved = self.get_foreshadowing_context(project, volume.volume_number, chapter.chapter_number)
+
+        writer = self._get_writer()
+        content = writer.write_chapter(
+            brief=brief, volume_number=volume.volume_number,
+            volume_title=volume.volume_title, volume_goal=volume.synopsis,
+            chapter_number=chapter.chapter_number, chapter_title=chapter.chapter_title,
+            must_happen=chapter.synopsis, pov=chapter.pov_character,
+            previous_context=prev_ctx, plant_foreshadowing="",
+            resolve_foreshadowing=unresolved, bible_context=bible_ctx,
+        )
+        chapter.content = content
+
+        for round_idx in range(review_rounds):
+            report = self.review_chapter(
+                project, volume_idx, chapter_idx, brief,
+                parallel=parallel_editors, on_chunk=on_review,
+            )
+            if report and round_idx < review_rounds - 1:
+                content = writer.revise_chapter(
+                    brief=brief, original_content=content, editor_report=report,
+                )
+                chapter.content = content
+
+        chapter.status = "done"
+        return content
+
     def review_chapter(self, project: Project, volume_idx: int, chapter_idx: int,
                        brief: dict, *, parallel: bool = False,
                        on_chunk: Callable[[str], None] | None = None) -> str:
@@ -51,7 +87,6 @@ class Orchestrator:
         bible_ctx = self.get_bible_context(project, volume.volume_number, chapter.chapter_number)
 
         if parallel:
-            # Three specialized editors in parallel
             return self.editor_agent.review_parallel(
                 title=project.title, genre=project.genre,
                 volume_number=volume.volume_number, volume_title=volume.volume_title,
