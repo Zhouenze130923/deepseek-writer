@@ -144,4 +144,4 @@ deepseek-writer/
 
 ## 相关
 
-- [华棠班级管理系统](https://huatang-class.top) — 另一个由同一位作者开发的教育管理项目
+- [aiceping.top](https://aiceping.top) — 另一个由同一位作者开发的 AI 测评网站
