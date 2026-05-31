@@ -92,6 +92,7 @@ class DeepSeekWriter:
             "/retry": self._cmd_retry,
             "/backtrack": self._cmd_backtrack,
             "/memory": self._cmd_memory,
+            "/web": self._cmd_web,
         }
         handler = handlers.get(command)
         if handler:
@@ -117,7 +118,7 @@ class DeepSeekWriter:
 [bold]查看[/bold]
   [cyan]/status[/cyan]  [cyan]/stats[/cyan]  [cyan]/memory[/cyan]
   [cyan]/templates[/cyan] [cyan]/list[/cyan] [cyan]/load[/cyan]
-  [cyan]/config[/cyan]  [cyan]/quit[/cyan]
+  [cyan]/config[/cyan]  [cyan]/quit[/cyan]  [cyan]/web[/cyan]
 """)
 
     def _cmd_fast(self, _):
@@ -223,6 +224,13 @@ class DeepSeekWriter:
             console.print(f"记忆系统: {s['backend']} | {s['count']} 条")
         else:
             print_info("无记忆数据")
+
+    def _cmd_web(self, _):
+        """启动 Web 界面。"""
+        console.print("[bold cyan]启动 Web 界面...[/bold cyan]")
+        console.print("[dim]访问 http://localhost:7860[/dim]")
+        from webui import build_ui
+        build_ui()
 
     def _cmd_templates(self, _):
         from templates import TEMPLATES
