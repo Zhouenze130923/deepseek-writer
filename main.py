@@ -41,7 +41,10 @@ class DeepSeekWriter:
     def run(self):
         print_banner()
         self._init_orchestrator()
+        labels = {1: '极宽松', 2: '宽松', 3: '适中', 4: '严格', 5: '极其严格'}
+        s_label = labels.get(self.config.strictness, '适中')
         print_info(f"模型: {self.config.provider.upper()} — {self.config.active_model}")
+        print_info(f"编辑严格度: {self.config.strictness}/5 ({s_label})")
         print_info("输入灵感开始 | /help 命令 | /fast 极速 | /triple 三编辑并行")
 
         while True:
@@ -86,6 +89,7 @@ class DeepSeekWriter:
             "/quit": self._cmd_quit,
             "/fast": self._cmd_fast, "/strict": self._cmd_strict,
             "/triple": self._cmd_triple,
+            "/strictness": self._cmd_strictness,
             "/import": self._cmd_import,
             "/export": self._cmd_export,
             "/continue": self._cmd_continue,
@@ -113,7 +117,8 @@ class DeepSeekWriter:
   [cyan]/export[/cyan]      多格式导出
 [bold]模式[/bold]
   [cyan]/fast[/cyan]      极速（跳过审阅）
-  [cyan]/strict[/cyan]    严格（2轮审阅）
+  [cyan]/strict[/cyan]    严格（2轮审阅 + 严格度4）
+  [cyan]/strictness[/cyan] 1-5  编辑严格度（1=极宽松, 5=极其严格）
   [cyan]/triple[/cyan]    三编辑并审（逻辑+风格+伏笔）
 [bold]查看[/bold]
   [cyan]/status[/cyan]  [cyan]/stats[/cyan]  [cyan]/memory[/cyan]
@@ -128,7 +133,27 @@ class DeepSeekWriter:
 
     def _cmd_strict(self, _):
         self.review_rounds = 2; self.fast_mode = False
-        print_success("严格模式: 2轮审阅")
+        # 切换严格度快捷：/strict = 严格度4
+        self.config.strictness = 4
+        self.config.save()
+        self._init_orchestrator()
+        print_success(f"严格模式: 2轮审阅, 编辑严格度={self.config.strictness}")
+
+    def _cmd_strictness(self, args):
+        """设置编辑严格度 1-5。"""
+        try:
+            level = int(args.strip()) if args.strip() else 0
+        except ValueError:
+            print_warning("用法: /strictness <1-5>  (1=极宽松, 5=极其严格)")
+            return
+        if level < 1 or level > 5:
+            print_warning("严格度范围为 1-5")
+            return
+        self.config.strictness = level
+        self.config.save()
+        self._init_orchestrator()
+        labels = {1: '极宽松', 2: '宽松', 3: '适中', 4: '严格', 5: '极其严格'}
+        print_success(f"编辑严格度: {level} - {labels[level]}")
 
     def _cmd_triple(self, _):
         self.parallel_editors = not self.parallel_editors
@@ -306,6 +331,9 @@ class DeepSeekWriter:
         console.print(f"伏笔: {fs['total']}总 {fs['resolved']}已收 ({fs['rate']})")
         if fs['critical_unresolved'] > 0:
             print_warning(f"  {fs['critical_unresolved']}个关键伏笔未收！")
+        labels = {1: '极宽松', 2: '宽松', 3: '适中', 4: '严格', 5: '极其严格'}
+        s_label = labels.get(self.config.strictness, '适中')
+        console.print(f"编辑严格度: {self.config.strictness}/5 ({s_label})")
         console.print(f"圣经: {bs['total']}条")
         if self.memory:
             ms = self.memory.stats()
@@ -638,16 +666,22 @@ class DeepSeekWriter:
                 return
 
     def _report_has_issues(self, report: str) -> bool:
-        """判断编辑报告是否包含需要修改的实际问题。"""
-        if not report.strip():
+        """判断编辑报告是否包含需要修改的实际问题（跟随严格度）。"""
+        if not report or not report.strip():
             return False
-        # All three editors explicitly passed → skip
+
+        # 从编辑器获取严格度配置
+        strict_cfg = self.orchestrator.get_editor_strictness()
+        pass_threshold = strict_cfg.get('pass_threshold', 3)
+        report_min_len = strict_cfg.get('report_min_len', 60)
+
         pass_count = len(re.findall(
             r'(逻辑通过|节奏通过|连贯通过|无问题|没问题|合格|未发现问题|没有发现问题|无不一致|无矛盾)',
             report,
         ))
-        if pass_count >= 2:
+        if pass_count >= pass_threshold:
             return False
+
         # Explicit issue markers → must revise
         if re.search(
             r'⚠|不合格|必须修改|严重问题|有矛盾|不合理|硬伤|需修改|建议修改|建议重写|建议调整|'
@@ -655,12 +689,16 @@ class DeepSeekWriter:
             report,
         ):
             return True
-        # If editors found something concrete
+
+        # 只要有一位编辑发现了具体问题，就触发修改
         if re.search(r'需(修正|调整|改进|重写)|建议(删除|修改|重写|调整)', report):
             return True
-        # Report has substantive content beyond just "passes" → might have issues
-        if len(report.strip()) > 30:
+
+        # 有实质性内容（长度门槛跟随严格度）
+        body = re.sub(r'(逻辑通过|节奏通过|连贯通过|无问题|合格)', '', report).strip()
+        if len(body) > report_min_len:
             return True
+
         return False
 
     def _get_prev_context(self, vi, ci):

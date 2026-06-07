@@ -24,4 +24,4 @@ dependencies = [
 ]
 
 [project.scripts]
-deepseek-writer = "cli:main"
+dswriter = "cli:main"

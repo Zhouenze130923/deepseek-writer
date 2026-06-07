@@ -17,7 +17,7 @@ setup(
     },
     entry_points={
         "console_scripts": [
-            "deepseek-writer=cli:main",
+            "dswriter=cli:main",
         ],
     },
     python_requires=">=3.10",
@@ -30,5 +30,6 @@ setup(
         "fpdf2>=2.7.0",
         "python-docx>=1.1.0",
         "markdown>=3.5.0",
+        "edge-tts>=7.0",  # 免费 TTS，用于有声书导出
     ],
 )

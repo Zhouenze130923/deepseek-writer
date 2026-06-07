@@ -14,13 +14,22 @@ class LLMClient:
     @property
     def anthropic(self) -> Anthropic:
         if self._anthropic_client is None:
-            self._anthropic_client = Anthropic(api_key=self.config.claude_api_key)
+            self._anthropic_client = Anthropic(
+                api_key=self.config.claude_api_key,
+                timeout=120.0,
+                max_retries=2,
+            )
         return self._anthropic_client
 
     @property
     def openai(self) -> OpenAI:
         if self._openai_client is None:
-            self._openai_client = OpenAI(api_key=self.config.deepseek_api_key, base_url=self.config.deepseek_base_url)
+            self._openai_client = OpenAI(
+                api_key=self.config.deepseek_api_key,
+                base_url=self.config.deepseek_base_url,
+                timeout=120.0,           # 单次请求超时 2 分钟
+                max_retries=2,            # 失败重试 2 次
+            )
         return self._openai_client
 
     def chat(self, system: str, messages: list[dict], *, stream: bool = False,

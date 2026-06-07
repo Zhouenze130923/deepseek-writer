@@ -9,6 +9,7 @@ import asyncio
 import sys
 import re
 import threading
+from typing import Generator
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -102,6 +103,8 @@ class WebApp:
         self._stream_buffer: list[str] = []
         self.auto_review = True      # 全自动三编辑审阅
         self.review_rounds = 2       # 审阅轮数
+        self.parallel_writers = True # 多子代理并行写作
+        self.num_scenes = 3          # 每章拆成几段
 
     # ── Logging ──
 
@@ -138,7 +141,7 @@ class WebApp:
 
     # ── Project creation ──
 
-    def create_project(self, idea: str, template_name: str) -> tuple[str, str]:
+    def create_project(self, idea: str, template_name: str, user_suggestions: str = "") -> tuple[str, str]:
         """Generate outline + characters. Returns (status_md, logs)."""
         if not self.config.api_key:
             return "❌ 请先在「配置」标签设置 API Key", self.get_logs()
@@ -157,9 +160,15 @@ class WebApp:
 
         # Stage 1: Outline
         self.log("📋 生成大纲...")
+        if self.config.search_enabled:
+            self.log("🌐 联网搜索背景信息...")
         try:
             template_guide = template_to_prompt(template) if template else ""
-            outline = self.orchestrator.generate_outline(premise=idea, template_guide=template_guide)
+            outline = self.orchestrator.generate_outline(
+                premise=idea,
+                template_guide=template_guide,
+                user_suggestions=user_suggestions,
+            )
             self._load_outline(outline)
             vols = len(self.project.volumes)
             chs = sum(len(v.chapters) for v in self.project.volumes)
@@ -328,31 +337,46 @@ class WebApp:
 
     # ── Writing ──
 
-    def write_all_chapters(self, progress=...) -> tuple[str, str]:
-        """全自动写作：写 → 三编辑并审 → 自动修改 → 下一章。"""
+    def write_all_chapters(self, textarea_user_suggestions: str = "", progress=...) -> Generator[tuple[str, str], None, tuple[str, str]]:  # type: ignore
+        """全自动写作：各卷并行，卷内顺序。"""
         if not self.project or not self.brief:
-            return self._status_md(), self.get_logs()
+            yield self._status_md(), self.get_logs()
+            return
+
+        self.writing_suggestions = textarea_user_suggestions
 
         total_pending = sum(
             1 for v in self.project.volumes for c in v.chapters if c.status == "pending"
         )
         if total_pending == 0:
             self.log("所有章节已完成！")
-            return self._status_md(), self.get_logs()
+            yield self._status_md(), self.get_logs()
+            return
 
         review_mode = "三编辑并审" if self.auto_review else "跳过审阅"
-        self.log(f"✍️ 开始全自动写作 {total_pending} 章 ({review_mode}, {self.review_rounds}轮)...")
+        self.log(f"✍️ 开始全自动写作 {total_pending} 章 ({review_mode}, {self.review_rounds}轮)，各卷并行...")
+        if self.config.search_enabled:
+            self.log("🌐 已开启联网搜索，写作时将自动检索相关信息")
+        yield self._status_md(), self.get_logs()
         self.project.current_stage = "writing"
 
-        done_count = 0
-        for vi, volume in enumerate(self.project.volumes):
+        import concurrent.futures
+        import threading
+        _log_lock = threading.Lock()
+
+        def _safe_log(msg: str):
+            with _log_lock:
+                self.log(msg)
+
+        def _write_volume(vi: int, volume) -> int:
+            """写入单卷所有未完成章节，返回本卷完成章数。"""
             vol_plan = self.brief.get("volume_plan", [])
             vol_brief = vol_plan[vi] if vi < len(vol_plan) else {}
             volume_goal = vol_brief.get("goal", volume.synopsis)
+            vol_done = 0
 
             for ci, chapter in enumerate(volume.chapters):
                 if chapter.status == "done":
-                    done_count += 1
                     continue
 
                 ch_brief = vol_brief.get("chapters", [])
@@ -361,10 +385,10 @@ class WebApp:
                 pov = ch_plan.get("pov", chapter.pov_character)
                 prev = self._prev_context(vi, ci)
 
-                self.log(f"✍️ V{volume.volume_number}C{chapter.chapter_number}「{chapter.chapter_title}」...")
+                _safe_log(f"✍️ V{volume.volume_number}C{chapter.chapter_number}「{chapter.chapter_title}」(子代理#{vi+1})...")
 
                 try:
-                    writer = self.orchestrator._get_writer()
+                    writer = self.orchestrator._get_writer(volume_idx=vi)
                     _, resolve_fs = self.orchestrator.get_foreshadowing_context(
                         self.project, volume.volume_number, chapter.chapter_number)
                     bible_ctx = self.orchestrator.get_bible_context(
@@ -375,20 +399,48 @@ class WebApp:
                         mem_ctx = self.memory.get_context_for_chapter(
                             volume.volume_number, chapter.chapter_number, must_happen)
 
-                    content = writer.write_chapter(
-                        brief=self.brief,
-                        volume_number=volume.volume_number,
-                        volume_title=volume.volume_title,
-                        volume_goal=volume_goal,
-                        chapter_number=chapter.chapter_number,
-                        chapter_title=chapter.chapter_title,
-                        must_happen=must_happen,
-                        pov=pov,
-                        previous_context=prev,
-                        plant_foreshadowing="自然植入大纲中的伏笔",
-                        resolve_foreshadowing=resolve_fs,
-                        bible_context=bible_ctx + "\n" + mem_ctx,
-                    )
+                    # 联网搜索本章相关背景
+                    search_ctx = ""
+                    if self.config.search_enabled:
+                        _safe_log(f"  🌐 搜索 «{chapter.chapter_title}» 相关背景...")
+                        search_ctx = self.orchestrator._do_search(
+                            f"{self.project.title} {chapter.chapter_title} {chapter.synopsis}"
+                        )
+
+                    if self.parallel_writers and not getattr(self, '_first_write_done', False):
+                        _safe_log(f"  🧩 多子代理并行写作({self.num_scenes}个场景)...")
+                        content = writer.write_parallel(
+                            brief=self.brief,
+                            volume_number=volume.volume_number,
+                            volume_title=volume.volume_title,
+                            volume_goal=volume_goal,
+                            chapter_number=chapter.chapter_number,
+                            chapter_title=chapter.chapter_title,
+                            must_happen=must_happen,
+                            pov=pov,
+                            previous_context=prev,
+                            search_context=search_ctx,
+                            user_suggestions=self.writing_suggestions,
+                            bible_context=bible_ctx + "\n" + mem_ctx,
+                            num_scenes=self.num_scenes,
+                        )
+                    else:
+                        content = writer.write_chapter(
+                            brief=self.brief,
+                            volume_number=volume.volume_number,
+                            volume_title=volume.volume_title,
+                            volume_goal=volume_goal,
+                            chapter_number=chapter.chapter_number,
+                            chapter_title=chapter.chapter_title,
+                            must_happen=must_happen,
+                            pov=pov,
+                            previous_context=prev,
+                            plant_foreshadowing="自然植入大纲中的伏笔",
+                            resolve_foreshadowing=resolve_fs,
+                            bible_context=bible_ctx + "\n" + mem_ctx,
+                            search_context=search_ctx,
+                            user_suggestions=self.writing_suggestions,
+                        )
 
                     # Auto-expand
                     wc = len(content)
@@ -416,28 +468,27 @@ class WebApp:
                         wc = len(content)
 
                     chapter.content = content
-                    self.log(f"  📝 初稿 {wc} 字")
+                    _safe_log(f"  📝 初稿 {wc} 字")
 
                     # ── Auto Review + Revise ──
                     if self.auto_review:
                         for round_num in range(1, self.review_rounds + 1):
-                            self.log(f"  🔍 三编辑并审 第{round_num}轮...")
+                            _safe_log(f"  🔍 三编辑并审 第{round_num}轮...")
                             try:
                                 report = self.orchestrator.review_chapter(
                                     self.project, vi, ci, self.brief,
-                                    parallel=True,  # 三编辑并行: 逻辑+风格+伏笔
+                                    parallel=True,
                                 )
                             except Exception as e:
-                                self.log(f"  ⚠ 审阅跳过: {e}")
+                                _safe_log(f"  ⚠ 审阅跳过: {e}")
                                 break
 
                             if not self._report_has_real_issues(report):
-                                self.log(f"  ✅ 编辑: 无重大问题，通过")
+                                _safe_log(f"  ✅ 编辑: 无重大问题，通过")
                                 break
 
-                            # Extract key issues for log
                             issue_count = len(re.findall(r'⚠|需修改|矛盾|问题', report))
-                            self.log(f"  ⚠ 发现 {issue_count} 处问题，自动修改...")
+                            _safe_log(f"  ⚠ 发现 {issue_count} 处问题，自动修改...")
 
                             try:
                                 revised = writer.revise_chapter(
@@ -446,15 +497,15 @@ class WebApp:
                                     editor_report=report,
                                 )
                                 chapter.content = revised
-                                self.log(f"  ✅ 第{round_num}轮修改完成 ({len(revised)} 字)")
+                                _safe_log(f"  ✅ 第{round_num}轮修改完成 ({len(revised)} 字)")
                             except Exception as e:
-                                self.log(f"  ⚠ 修改跳过: {e}")
+                                _safe_log(f"  ⚠ 修改跳过: {e}")
                                 break
                     else:
-                        self.log(f"  ⏩ 跳过审阅 (极速模式)")
+                        _safe_log(f"  ⏩ 跳过审阅 (极速模式)")
 
                     chapter.status = "done"
-                    done_count += 1
+                    vol_done += 1
 
                     # Update bible
                     with self._lock:
@@ -468,47 +519,76 @@ class WebApp:
                             volume.volume_number, chapter.chapter_number,
                             chapter.synopsis, pov, ", ".join(chapter.key_events[:3]))
 
-                    self.log(f"  🎉 第{chapter.chapter_number}章完成 ({len(chapter.content)} 字)")
+                    _safe_log(f"  🎉 第{chapter.chapter_number}章完成 ({len(chapter.content)} 字)")
 
                 except Exception as e:
-                    self.log(f"  ❌ 失败: {e}")
+                    _safe_log(f"  ❌ V{volume.volume_number}第{chapter.chapter_number}章失败: {e}")
                     chapter.status = "pending"
                     continue
 
                 # Save after each chapter
-                self.file_manager.save(self.project)
+                with _log_lock:
+                    self.file_manager.save(self.project)
 
             volume.status = "done"
+            return vol_done
+
+        # 各卷并行提交
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(self.project.volumes)) as pool:
+            vol_futures = {
+                pool.submit(_write_volume, vi, volume): vi
+                for vi, volume in enumerate(self.project.volumes)
+            }
+            done_count = 0
+            for future in concurrent.futures.as_completed(vol_futures):
+                vi = vol_futures[future]
+                try:
+                    vol_done = future.result(timeout=3600)
+                    done_count += vol_done
+                    _safe_log(f"📚 第{vi+1}卷完成 ({vol_done}章)")
+                except Exception as e:
+                    _safe_log(f"❌ 第{vi+1}卷写入异常: {e}")
+                yield self._status_md(), self.get_logs()
 
         self.project.current_stage = "done"
         self.file_manager.save(self.project)
         self.log(f"🎉 全自动写作完成！共 {done_count} 章")
-        return self._status_md(), self.get_logs()
+        yield self._status_md(), self.get_logs()
 
     def _report_has_real_issues(self, report: str) -> bool:
-        """判断三编辑报告中是否有需要修改的实际问题。"""
+        """判断三编辑报告中是否有需要修改的实际问题（跟随严格度）。"""
         if not report or not report.strip():
             return False
-        # All three editors explicitly passed → no issues
+
+        # 从编辑器获取严格度配置
+        strict_cfg = self.orchestrator.get_editor_strictness()
+        pass_threshold = strict_cfg.get('pass_threshold', 3)
+        report_min_len = strict_cfg.get('report_min_len', 60)
+
         pass_count = len(re.findall(
             r'(逻辑通过|节奏通过|连贯通过|无问题|没问题|合格|未发现问题|没有发现问题|无不一致|无矛盾)',
             report,
         ))
-        if pass_count >= 2:
+        if pass_count >= pass_threshold:
             return False
-        # Has explicit issue markers → must revise
+
+        # 有明确的 ⚠ 或问题关键词 → 必须修改
         if re.search(
             r'⚠|不合格|必须修改|严重问题|有矛盾|不合理|硬伤|需修改|建议修改|建议重写|建议调整|'
             r'明显矛盾|严重拖沓|重大漏洞|行为与设定|前后不一|违反|逻辑不通|逻辑错误',
             report,
         ):
             return True
-        # If editors found something concrete (not just "通过")
+
+        # 有位编辑提出了具体内容
         if re.search(r'需(修正|调整|改进|重写)|建议(删除|修改|重写|调整)', report):
             return True
-        # Default: review report has content that isn't just "pass" → might have issues
-        if len(report.strip()) > 30:
+
+        # 删除通过标记后仍有实质性内容（长度门槛跟随严格度）
+        body = re.sub(r'(逻辑通过|节奏通过|连贯通过|无问题|合格)', '', report).strip()
+        if len(body) > report_min_len:
             return True
+
         return False
 
     def write_single_chapter(self, volume_num: int, chapter_num: int) -> tuple[str, str, str]:
@@ -536,28 +616,55 @@ class WebApp:
         pov = ch_plan.get("pov", chapter.pov_character)
         prev = self._prev_context(vi, ci)
 
-        self.log(f"✍️ 第{chapter_num}章「{chapter.chapter_title}」...")
+        self.log(f"✍️ 第{chapter_num}章「{chapter.chapter_title}」(子代理#{vi+1})...")
 
         try:
-            writer = self.orchestrator._get_writer()
+            writer = self.orchestrator._get_writer(volume_idx=vi)
             _, resolve_fs = self.orchestrator.get_foreshadowing_context(
                 self.project, volume.volume_number, chapter.chapter_number)
             bible_ctx = self.orchestrator.get_bible_context(
                 self.project, volume.volume_number, chapter.chapter_number)
 
-            content = writer.write_chapter(
-                brief=self.brief,
-                volume_number=volume.volume_number,
-                volume_title=volume.volume_title,
-                volume_goal=volume_goal,
-                chapter_number=chapter.chapter_number,
-                chapter_title=chapter.chapter_title,
-                must_happen=must_happen, pov=pov,
-                previous_context=prev,
-                plant_foreshadowing="自然植入",
-                resolve_foreshadowing=resolve_fs,
-                bible_context=bible_ctx,
-            )
+            # 联网搜索本章相关背景
+            search_ctx = ""
+            if self.config.search_enabled:
+                self.log(f"  🌐 搜索 «{chapter.chapter_title}» 相关背景...")
+                search_ctx = self.orchestrator._do_search(
+                    f"{self.project.title} {chapter.chapter_title} {chapter.synopsis}"
+                )
+
+            if self.parallel_writers:
+                self.log(f"  🧩 多子代理并行写作({self.num_scenes}个场景)...")
+                content = writer.write_parallel(
+                    brief=self.brief,
+                    volume_number=volume.volume_number,
+                    volume_title=volume.volume_title,
+                    volume_goal=volume_goal,
+                    chapter_number=chapter.chapter_number,
+                    chapter_title=chapter.chapter_title,
+                    must_happen=must_happen, pov=pov,
+                    previous_context=prev,
+                    bible_context=bible_ctx,
+                    search_context=search_ctx,
+                    user_suggestions=getattr(self, 'writing_suggestions', ''),
+                    num_scenes=self.num_scenes,
+                )
+            else:
+                content = writer.write_chapter(
+                    brief=self.brief,
+                    volume_number=volume.volume_number,
+                    volume_title=volume.volume_title,
+                    volume_goal=volume_goal,
+                    chapter_number=chapter.chapter_number,
+                    chapter_title=chapter.chapter_title,
+                    must_happen=must_happen, pov=pov,
+                    previous_context=prev,
+                    plant_foreshadowing="自然植入",
+                    resolve_foreshadowing=resolve_fs,
+                    bible_context=bible_ctx,
+                    search_context=search_ctx,
+                    user_suggestions=getattr(self, 'writing_suggestions', ''),
+                )
             chapter.content = content
             chapter.status = "done"
             self.file_manager.save(self.project)
@@ -857,6 +964,37 @@ def build_ui():
 
             provider.change(update_models, [provider], [model])
 
+            gr.Markdown("---")
+            gr.Markdown("### 🌐 联网搜索")
+            with gr.Row():
+                search_enabled = gr.Checkbox(label="生成时自动联网搜索", value=app.config.search_enabled,
+                                              info="大纲和章节写作前自动搜索相关信息")
+                search_provider = gr.Dropdown(["tavily", "searxng"], label="搜索服务",
+                                               value=app.config.search_provider)
+            with gr.Row():
+                tavily_key = gr.Textbox(label="Tavily API Key", type="password",
+                                         value=app.config.tavily_api_key,
+                                         placeholder="在 tavily.com 获取", scale=2)
+                searxng_url = gr.Textbox(label="SearXNG 地址",
+                                          value=app.config.searxng_base_url,
+                                          placeholder="http://localhost:8888", scale=2)
+
+            def save_search_config(enable, provider, tavily, searxng):
+                app.config.search_enabled = enable
+                app.config.search_provider = provider
+                app.config.tavily_api_key = tavily
+                app.config.searxng_base_url = searxng
+                app.config.save()
+                return f"✅ 搜索配置已保存{'，开启联网' if enable else '，关闭联网'}"
+
+            search_config_btn = gr.Button("💾 保存搜索配置", variant="secondary")
+            search_config_status = gr.Markdown("")
+            search_config_btn.click(
+                save_search_config,
+                [search_enabled, search_provider, tavily_key, searxng_url],
+                [search_config_status],
+            )
+
         # ═══════════════════════════════════════
         # Tab 2: Create (Outline + Characters)
         # ═══════════════════════════════════════
@@ -879,6 +1017,13 @@ def build_ui():
                     with gr.Row():
                         create_btn = gr.Button("🎬 生成大纲 + 人物", variant="primary", size="lg")
                         import_file = gr.File(label="导入约束文件 (.md)", file_types=[".md", ".txt"])
+
+                    gr.Markdown("### 💡 写作建议 / 修改要求")
+                    user_suggestions = gr.Textbox(
+                        label="对 AI 提出的要求",
+                        placeholder="例如：参考真实的历史背景来写世界观 / 主角性格参考三国演义中的诸葛亮 / 需要写一些中医相关的知识...",
+                        lines=2,
+                    )
 
                 with gr.Column(scale=1):
                     gr.Markdown("### 模版说明")
@@ -910,7 +1055,7 @@ def build_ui():
 
             create_btn.click(
                 app.create_project,
-                [idea, tmpl],
+                [idea, tmpl, user_suggestions],
                 [status_md, log_box],
             )
 
@@ -954,25 +1099,45 @@ def build_ui():
                 with gr.Column(scale=2):
                     write_all_btn = gr.Button("🚀 全自动写作（全部章节）", variant="primary", size="lg")
                 with gr.Column(scale=1):
+                    parallel_writers_toggle = gr.Checkbox(label="多子代理并行写作", value=True,
+                                                          info="多个 AI 子代理同时写不同场景后合并，速度快且内容多元")
                     auto_review_toggle = gr.Checkbox(label="三编辑并审", value=True,
                                                      info="写完后自动三子代理审阅（逻辑+风格+伏笔）")
                     review_rounds_slider = gr.Slider(label="审阅轮数", minimum=1, maximum=3, value=2, step=1,
                                                     info="每章最多审阅修改几轮")
+                    strictness_slider = gr.Slider(label="编辑严格度", minimum=1, maximum=5, value=app.config.strictness, step=1,
+                                                  info="1=极宽松 → 5=极其严格，影响编辑找茬的敏锐度")
 
             with gr.Row():
                 write_log = gr.Textbox(label="📋 写作日志", lines=8, interactive=False, autoscroll=True)
 
-            def update_review_settings(auto, rounds):
+            labels = {1: '极宽松', 2: '宽松', 3: '适中', 4: '严格', 5: '极其严格'}
+
+            def update_review_settings(parallel, auto, rounds, strictness):
+                app.parallel_writers = parallel
                 app.auto_review = auto
                 app.review_rounds = int(rounds)
-                return f"设置: {'三编辑并审' if auto else '极速(跳过审阅)'}, {int(rounds)}轮"
+                app.config.strictness = int(strictness)
+                app.config.save()
+                app.orchestrator = Orchestrator(app.config)
+                s_label = labels.get(int(strictness), '适中')
+                return f"写作: {'多代理并行' if parallel else '单代理'} | 审阅: {'三编辑并审' if auto else '跳过'} | {int(rounds)}轮 | 严格度{int(strictness)}/5({s_label})"
 
-            auto_review_toggle.change(update_review_settings, [auto_review_toggle, review_rounds_slider], None)
-            review_rounds_slider.change(update_review_settings, [auto_review_toggle, review_rounds_slider], None)
+            parallel_writers_toggle.change(update_review_settings, [parallel_writers_toggle, auto_review_toggle, review_rounds_slider, strictness_slider], None)
+            auto_review_toggle.change(update_review_settings, [parallel_writers_toggle, auto_review_toggle, review_rounds_slider, strictness_slider], None)
+            review_rounds_slider.change(update_review_settings, [parallel_writers_toggle, auto_review_toggle, review_rounds_slider, strictness_slider], None)
+            strictness_slider.change(update_review_settings, [parallel_writers_toggle, auto_review_toggle, review_rounds_slider, strictness_slider], None)
+
+            gr.Markdown("### 💡 用户修改建议")
+            writing_suggestions = gr.Textbox(
+                label="对当前写作的要求或建议（可加标签如 #主线 #感情线 #伏笔）",
+                placeholder="例如：主角性格要更果断 / 增加对战场的环境描写 / 参考真正的唐代官制来写朝廷...",
+                lines=2,
+            )
 
             write_all_btn.click(
                 app.write_all_chapters,
-                [],
+                [writing_suggestions],
                 [write_status, write_log],
             )
 
@@ -1108,6 +1273,68 @@ def build_ui():
             )
 
             gr.Markdown("---")
+            gr.Markdown("### 🔊 有声书导出")
+
+            with gr.Row():
+                audio_fmt = gr.Dropdown(
+                    ["m4a", "mp3"],
+                    label="音频格式",
+                    value="m4a",
+                    info="m4a(AAC) = 高质量小体积 | mp3 = 广泛兼容",
+                )
+                audio_voice = gr.Dropdown(
+                    [
+                        "zh-CN-XiaoxiaoNeural (晓晓-温柔女声)",
+                        "zh-CN-YunxiNeural (云希-阳光男声)",
+                        "zh-CN-XiaoyiNeural (晓伊-活泼女声)",
+                        "zh-CN-YunyangNeural (云扬-专业旁白)",
+                        "zh-CN-XiaohanNeural (晓涵-自然女声)",
+                        "zh-CN-YunjianNeural (云健-磁性男声)",
+                    ],
+                    label="朗读者声优",
+                    value="zh-CN-XiaoxiaoNeural (晓晓-温柔女声)",
+                )
+                audio_split = gr.Checkbox(label="每章独立文件", value=True,
+                                           info="勾选=每章一个文件，不勾选=整本合并")
+                audio_export_btn = gr.Button("🔊 生成有声书", variant="secondary")
+
+            audio_status = gr.Markdown("")
+            audio_log = gr.Textbox(label="🎤 生成日志", lines=4, interactive=False)
+
+            def export_audio_web(fmt, voice, per_chapter):
+                """WebUI 音频导出。"""
+                if not app.project:
+                    return "❌ 请先创建或加载项目", "无项目"
+                import io
+                import sys
+                from contextlib import redirect_stdout
+
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    try:
+                        exp = Exporter(app.project)
+                        voice_name = voice.split(" ")[0] if " " in voice else voice
+                        path = exp.export_audio(fmt=fmt, per_chapter=per_chapter, voice=voice_name)
+                        app.log(f"🔊 有声书导出: {fmt} | {voice_name}")
+                        status = f"✅ 有声书已生成: {path}"
+                    except ImportError as e:
+                        if 'edge_tts' in str(e):
+                            status = "❌ 需要安装 edge-tts: pip install edge-tts"
+                        else:
+                            status = f"❌ 导出失败: {e}"
+                        app.log(status)
+                    except Exception as e:
+                        status = f"❌ {e}"
+                        app.log(status)
+                return status, buf.getvalue()
+
+            audio_export_btn.click(
+                export_audio_web,
+                [audio_fmt, audio_voice, audio_split],
+                [audio_status, audio_log],
+            )
+
+            gr.Markdown("---")
             gr.Markdown("### 下载文件")
             gr.Markdown("导出后，文件保存在桌面的 `DeepSeekWriter/<书名>/` 目录下。")
             gr.Markdown("""
@@ -1117,6 +1344,7 @@ def build_ui():
             - **EPUB**: 电子书，支持 Kindle / Apple Books / 微信读书
             - **PDF**: 适合打印或分享
             - **DOCX**: Word 文档，可进一步编辑
+            - **m4a/mp3**: 有声书，使用 Microsoft Edge 免费 TTS
             """)
 
         # ═══════════════════════════════════════

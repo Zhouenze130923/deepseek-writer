@@ -318,8 +318,53 @@ def cmd_config(args: argparse.Namespace) -> dict:
     return result
 
 
+def cmd_web(args: argparse.Namespace) -> dict:
+    """启动 Web 界面 (Gradio)。"""
+    # 优先使用外部 shell 脚本启动（最可靠）
+    import shutil, subprocess
+    web_script = shutil.which("dswriter-web")
+    if web_script:
+        print("🌐 启动 Web 界面 → http://localhost:7860")
+        try:
+            subprocess.run([web_script], check=True)
+        except KeyboardInterrupt:
+            print("\nWeb 界面已关闭。")
+        return {"status": "ok"}
+    # 回退：直接启动 webui.py
+    webui_path = str(_HERE / "webui.py")
+    print("🌐 启动 Web 界面 → http://localhost:7860")
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, webui_path],
+            cwd=str(_HERE),
+        )
+        proc.wait()
+    except KeyboardInterrupt:
+        proc.terminate()
+        print("\nWeb 界面已关闭。")
+    return {"status": "ok"}
+
+
+def cmd_repl(args: argparse.Namespace) -> dict:
+    """启动交互式终端模式。"""
+    sys.path.insert(0, str(_HERE))
+    from main import DeepSeekWriter
+    writer = DeepSeekWriter()
+    try:
+        writer.run()
+    except KeyboardInterrupt:
+        print("\n已退出交互模式。")
+    return {"status": "ok"}
+
+
 def cmd_export(args: argparse.Namespace) -> dict:
     """导出项目。"""
+    # 列出语音（不导出）
+    if getattr(args, 'list_voices', False):
+        from utils.audio import AudioExporter
+        AudioExporter.list_voices()
+        return {"status": "ok"}
+
     fm = FileManager()
     project = fm.load(args.project)
     if not project:
@@ -327,19 +372,27 @@ def cmd_export(args: argparse.Namespace) -> dict:
         sys.exit(1)
 
     exp = Exporter(project)
-    exporters = {
+    text_exporters = {
         "md": exp.export_markdown,
         "txt": exp.export_txt,
         "epub": exp.export_epub,
         "pdf": exp.export_pdf,
         "docx": exp.export_docx,
     }
-    if args.format not in exporters:
-        sys.stderr.write(f"ERROR: 不支持的格式 {args.format}，可用: {', '.join(exporters.keys())}\n")
+    audio_formats = {"m4a", "mp3"}
+
+    if args.format in text_exporters:
+        output_path = args.output or text_exporters[args.format]()
+        result = {"format": args.format, "path": str(output_path)}
+    elif args.format in audio_formats:
+        voice = getattr(args, 'voice', '')
+        per_chapter = not getattr(args, 'merge', False)
+        output_dir = exp.export_audio(fmt=args.format, per_chapter=per_chapter, voice=voice)
+        result = {"format": f"audiobook/{args.format}", "path": str(output_dir)}
+    else:
+        sys.stderr.write(f"ERROR: 不支持的格式 {args.format}，可用: {', '.join(text_exporters.keys())} m4a mp3\n")
         sys.exit(1)
 
-    output_path = args.output or exporters[args.format]()
-    result = {"format": args.format, "path": str(output_path)}
     _output(result, args.output)
     return result
 
@@ -348,7 +401,7 @@ def cmd_export(args: argparse.Namespace) -> dict:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="deepseek-writer",
+        prog="dswriter",
         description="DeepSeek Writer — AI 网文写作助手命令行工具",
         epilog="环境变量: DEEPSEEK_API_KEY, ANTHROPIC_API_KEY, DEEPSEEK_WRITER_MODEL",
     )
@@ -397,10 +450,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_config.add_argument("--set-key", help="设置配置项，格式 key=value")
     p_config.set_defaults(func=cmd_config)
 
+    # web
+    sub.add_parser("web", help="启动 Web 界面 (Gradio)").set_defaults(func=cmd_web)
+
+    # repl (interactive)
+    sub.add_parser("repl", help="启动交互式终端模式").set_defaults(func=cmd_repl)
+
     # export
     p_export = sub.add_parser("export", help="导出项目")
     p_export.add_argument("--project", required=True, help="项目名称")
-    p_export.add_argument("--format", required=True, choices=["md", "txt", "epub", "pdf", "docx"], help="导出格式")
+    p_export.add_argument("--format", required=True, choices=["md", "txt", "epub", "pdf", "docx", "m4a", "mp3"],
+                          help="导出格式（m4a/mp3 为有声书，需要 edge-tts）")
+    p_export.add_argument("--voice", default="zh-CN-XiaoxiaoNeural",
+                          help="TTS 语音（仅 m4a/mp3 格式有效，默认 zh-CN-XiaoxiaoNeural）")
+    p_export.add_argument("--merge", action="store_true", dest="merge",
+                          help="合并为单文件（仅 m4a/mp3 格式有效，默认每章独立文件）")
+    p_export.add_argument("--list-voices", action="store_true",
+                          help="列出所有可用语音（不执行导出）")
     p_export.set_defaults(func=cmd_export)
 
     return parser

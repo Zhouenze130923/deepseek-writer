@@ -1,6 +1,6 @@
 DEEPSEEK_MODELS = {
-    "deepseek-v4-flash": {"max_tokens": 8192, "description": "DeepSeek V4 Flash - 快速响应"},
-    "deepseek-v4-pro": {"max_tokens": 8192, "description": "DeepSeek V4 Pro - 增强推理"},
+    "deepseek-v4-flash": {"max_tokens": 32768, "description": "DeepSeek V4 Flash - 快速响应"},
+    "deepseek-v4-pro": {"max_tokens": 32768, "description": "DeepSeek V4 Pro - 增强推理"},
 }
 
 CLAUDE_MODELS = {

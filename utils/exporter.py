@@ -123,6 +123,27 @@ class Exporter:
         return results
 
     # ═══════════════════════════════════════════
+    # Audio (m4a / mp3 via edge-tts)
+    # ═══════════════════════════════════════════
+
+    def export_audio(self, fmt: str = "m4a", per_chapter: bool = True,
+                     voice: str = "") -> str:
+        """导出有声书。
+
+        Args:
+            fmt: "m4a" 或 "mp3"
+            per_chapter: True=每章单独文件, False=整本合并
+            voice: TTS 声优（空=默认）
+
+        Returns: 输出目录路径
+        """
+        from utils.audio import AudioExporter
+        exporter = AudioExporter(self.project, str(self.output_dir), voice=voice or "")
+        if fmt == "mp3":
+            return exporter.export_mp3(per_chapter)
+        return exporter.export_m4a(per_chapter)
+
+    # ═══════════════════════════════════════════
     # Markdown
     # ═══════════════════════════════════════════
 

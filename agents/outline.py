@@ -6,10 +6,13 @@ class OutlineAgent(BaseAgent):
     """大纲生成代理。"""
     name = "outline"
 
-    def generate(self, premise: str, template_guide: str = "") -> dict:
+    def generate(self, premise: str, template_guide: str = "",
+                 search_context: str = "", user_suggestions: str = "") -> dict:
         user_message = OUTLINE_USER_TEMPLATE.format(
             premise=premise,
             template_guide=template_guide or "根据创意自动选择最合适的结构。",
+            search_context=search_context,
+            user_suggestions=user_suggestions or "无",
         )
         response = self.run(OUTLINE_SYSTEM, user_message, temperature=0.7, max_tokens=16384)
         return self.parse_json(response)

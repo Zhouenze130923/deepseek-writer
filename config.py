@@ -18,6 +18,12 @@ class Config:
     temperature: float = 0.8
     max_tokens: int = 8192
     top_p: float = 0.95
+    strictness: int = 3  # 1-5: 宽松→极其严格
+    # 联网搜索
+    search_enabled: bool = False
+    search_provider: str = "tavily"  # "tavily" or "searxng"
+    tavily_api_key: str = ""
+    searxng_base_url: str = ""
 
     def save(self):
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)

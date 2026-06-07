@@ -85,4 +85,5 @@ class FileManager:
             vol_dir.mkdir(parents=True, exist_ok=True)
             for ch in vol.chapters:
                 if ch.content:
-                    (vol_dir / f"第{ch.chapter_number}章.md").write_text(f"# 第{ch.chapter_number}章「{ch.chapter_title}」\n\n{ch.content}")
+                    header = f"第{ch.chapter_number}章「{ch.chapter_title}」\n{'-' * 30}\n\n"
+                    (vol_dir / f"第{ch.chapter_number}章.txt").write_text(header + ch.content, encoding="utf-8")
